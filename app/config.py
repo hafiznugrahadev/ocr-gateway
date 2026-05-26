@@ -24,6 +24,13 @@ class Settings(BaseSettings):
     OCR_DET_DB_BOX_THRESH: float = 0.3
     OCR_CPU_THREADS: int = 4
 
+    # Number of PaddleOCR engines kept in a pool per language. Pages of a PDF
+    # are dispatched across these engines in parallel via asyncio.gather.
+    # Each engine uses ~200-500MB RAM, so memory cost ≈ workers × ~400MB.
+    # Each engine is given OCR_CPU_THREADS // OCR_PARALLEL_WORKERS intra-op
+    # threads so the total CPU budget stays equal to OCR_CPU_THREADS.
+    OCR_PARALLEL_WORKERS: int = Field(default=4, ge=1, le=32)
+
     OCR_MAX_FILE_SIZE_MB: int = 50
     OCR_MAX_PAGES: int = 100
     OCR_URL_DOWNLOAD_TIMEOUT: int = 30

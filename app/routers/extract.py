@@ -238,24 +238,35 @@ async def extract_endpoint(
                 )
         else:
             method = "ocr"
-            logger.info("pdf using OCR pages=%d", len(selected))
+            logger.info(
+                "pdf using OCR pages=%d workers=%d",
+                len(selected),
+                settings.OCR_PARALLEL_WORKERS,
+            )
             rasters = await asyncio.to_thread(
                 rasterize_pages, raw, selected, settings.OCR_PDF_DPI
             )
-            for n, png_bytes in rasters:
+
+            async def _ocr_one_page(n: int, png_bytes: bytes) -> PageResult:
                 logger.info("ocr pdf page=%d processing", n)
                 result = await asyncio.to_thread(ocr_image, png_bytes, chosen_lang)
-                has_unclear = any(line.get("unclear") for line in result.get("lines", []))
-                page_results.append(
-                    PageResult(
-                        page=n,
-                        text=result["text"],
-                        confidence=float(result.get("confidence", 0.0)),
-                        word_count=_word_count(result["text"]),
-                        has_table=False,
-                        has_unclear=has_unclear,
-                    )
+                has_unclear = any(
+                    line.get("unclear") for line in result.get("lines", [])
                 )
+                return PageResult(
+                    page=n,
+                    text=result["text"],
+                    confidence=float(result.get("confidence", 0.0)),
+                    word_count=_word_count(result["text"]),
+                    has_table=False,
+                    has_unclear=has_unclear,
+                )
+
+            page_results.extend(
+                await asyncio.gather(
+                    *(_ocr_one_page(n, png) for n, png in rasters)
+                )
+            )
     else:
         method = "ocr"
         try:
