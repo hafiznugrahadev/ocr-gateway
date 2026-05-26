@@ -10,11 +10,13 @@ from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from app.config import settings
 from app.dependencies import require_bearer
 from app.models.schemas import (
+    ExtractFormParams,
     ExtractMetadata,
     ExtractResponse,
     ExtractResult,
     OutputFormat,
     PageResult,
+    UrlExtractRequest,
 )
 from app.services.detector import has_text_layer
 from app.services.ocr_service import get_ocr, ocr_image
@@ -36,7 +38,6 @@ _IMAGE_MIMES = {
     "image/bmp",
 }
 _PDF_MIME = "application/pdf"
-_VALID_FORMATS = {"text", "markdown", "json"}
 _WORD_RE = re.compile(r"\w+", re.UNICODE)
 
 
@@ -79,6 +80,10 @@ async def _read_inputs(
     Resolve raw input bytes + meta from either multipart upload, multipart URL,
     or JSON body. Returns (raw, content_type, filename, source, lang, pages_spec,
     output_format).
+
+    All structured fields are validated via Pydantic models. Invalid values
+    raise pydantic.ValidationError, which the global handler turns into a
+    structured 422 response.
     """
     content_type_header = (request.headers.get("content-type") or "").lower()
 
@@ -89,18 +94,31 @@ async def _read_inputs(
             raise OcrGatewayError("INVALID_JSON", f"Invalid JSON: {exc}", 400) from exc
         if not isinstance(body, dict):
             raise OcrGatewayError("INVALID_JSON", "Body must be a JSON object", 400)
-        url_value = (body.get("url") or "").strip()
-        if not url_value:
-            raise OcrGatewayError("MISSING_INPUT", "JSON body must include 'url'", 400)
-        chosen_format = (body.get("output_format") or "json").strip().lower()
-        chosen_lang = (body.get("language") or settings.OCR_LANGUAGE).strip() or settings.OCR_LANGUAGE
-        chosen_pages = (body.get("pages") or "all").strip() or "all"
 
-        raw, content_type, filename = await fetch_url(url_value)
-        return raw, content_type, filename, "url", chosen_lang, chosen_pages, chosen_format
+        params = UrlExtractRequest.model_validate(body)
+        chosen_lang = params.language or settings.OCR_LANGUAGE
+        raw, content_type, filename = await fetch_url(str(params.url))
+        return (
+            raw,
+            content_type,
+            filename,
+            "url",
+            chosen_lang,
+            params.pages,
+            params.output_format,
+        )
+
+    form_params = ExtractFormParams.model_validate(
+        {
+            "url": url,
+            "language": language,
+            "pages": pages,
+            "output_format": output_format,
+        }
+    )
 
     has_file = bool(file is not None and (file.filename or "").strip())
-    has_url = bool(url and url.strip())
+    has_url = form_params.url is not None
     if has_file and has_url:
         raise OcrGatewayError(
             "BOTH_INPUT", "Provide exactly one of: 'file' or 'url'", 400
@@ -110,16 +128,30 @@ async def _read_inputs(
             "MISSING_INPUT", "Provide one of: 'file' (multipart) or 'url'", 400
         )
 
-    chosen_format = (output_format or "json").strip().lower()
-    chosen_lang = (language or settings.OCR_LANGUAGE).strip() or settings.OCR_LANGUAGE
-    chosen_pages = (pages or "all").strip() or "all"
+    chosen_lang = form_params.language or settings.OCR_LANGUAGE
 
     if has_url:
-        raw, content_type, filename = await fetch_url(url.strip())
-        return raw, content_type, filename, "url", chosen_lang, chosen_pages, chosen_format
+        raw, content_type, filename = await fetch_url(str(form_params.url))
+        return (
+            raw,
+            content_type,
+            filename,
+            "url",
+            chosen_lang,
+            form_params.pages,
+            form_params.output_format,
+        )
 
     raw = await file.read()
-    return raw, file.content_type, file.filename or "", "upload", chosen_lang, chosen_pages, chosen_format
+    return (
+        raw,
+        file.content_type,
+        file.filename or "",
+        "upload",
+        chosen_lang,
+        form_params.pages,
+        form_params.output_format,
+    )
 
 
 @router.post("/extract", response_model=ExtractResponse)
@@ -137,13 +169,6 @@ async def extract_endpoint(
     raw, content_type, filename, source, chosen_lang, pages_spec, chosen_format = await _read_inputs(
         request, file, url, language, pages, output_format
     )
-
-    if chosen_format not in _VALID_FORMATS:
-        raise OcrGatewayError(
-            "INVALID_OUTPUT_FORMAT",
-            f"output_format must be one of: {sorted(_VALID_FORMATS)}",
-            400,
-        )
 
     if not raw:
         raise OcrGatewayError("MISSING_INPUT", "Empty file", 400)

@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from pydantic import ValidationError
 
 from app.config import settings
 from app.routers import extract as extract_router
@@ -81,13 +82,29 @@ async def _http_exc(_request: Request, exc: HTTPException) -> JSONResponse:
     )
 
 
+def _format_validation_errors(errors: list[dict]) -> str:
+    parts: list[str] = []
+    for err in errors:
+        loc = ".".join(str(p) for p in err.get("loc", []) if p != "body")
+        msg = err.get("msg", "")
+        parts.append(f"{loc}: {msg}" if loc else msg)
+    return "; ".join(parts) or "Invalid request"
+
+
 @app.exception_handler(RequestValidationError)
 async def _validation_exc(_request: Request, exc: RequestValidationError) -> JSONResponse:
-    detail = "; ".join(
-        f"{'.'.join(str(p) for p in err.get('loc', []))}: {err.get('msg', '')}"
-        for err in exc.errors()
-    ) or "Invalid request"
-    return error_response("VALIDATION_ERROR", detail, 422)
+    return error_response("VALIDATION_ERROR", _format_validation_errors(exc.errors()), 422)
+
+
+@app.exception_handler(ValidationError)
+async def _pydantic_validation_exc(_request: Request, exc: ValidationError) -> JSONResponse:
+    return error_response("VALIDATION_ERROR", _format_validation_errors(exc.errors()), 422)
+
+
+@app.exception_handler(Exception)
+async def _unhandled_exc(_request: Request, exc: Exception) -> JSONResponse:
+    logger.exception("unhandled exception during request: %s", exc)
+    return error_response("INTERNAL_ERROR", "Internal server error", 500)
 
 
 app.include_router(health_router.router)
