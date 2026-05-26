@@ -31,6 +31,13 @@ class Settings(BaseSettings):
     # threads so the total CPU budget stays equal to OCR_CPU_THREADS.
     OCR_PARALLEL_WORKERS: int = Field(default=4, ge=1, le=32)
 
+    # Run preprocessor.preprocess() (deskew + denoise + CLAHE) before OCR.
+    # Helps phone-scanned PDFs (skewed, uneven lighting, noisy). Clean
+    # pages skip the heavy steps via an internal "looks clean" heuristic.
+    # Adds 100-500ms per page when applied; turn off if your inputs are
+    # already clean digital rasters.
+    OCR_ENABLE_PREPROCESS: bool = True
+
     OCR_MAX_FILE_SIZE_MB: int = 50
     OCR_MAX_PAGES: int = 100
     OCR_URL_DOWNLOAD_TIMEOUT: int = 30

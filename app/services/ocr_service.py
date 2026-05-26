@@ -16,6 +16,7 @@ import numpy as np
 from PIL import Image
 
 from app.config import settings
+from app.services.preprocessor import preprocess
 
 logger = logging.getLogger(__name__)
 
@@ -119,10 +120,13 @@ def ocr_image(image_bytes: bytes, lang: str) -> dict[str, Any]:
     < OCR_UNCLEAR_THRESHOLD are marked as [UNCLEAR] in the joined `text`,
     while the original recognized string is preserved in `lines[i].text`.
     """
+    rgb = _decode_image(image_bytes)
+    if settings.OCR_ENABLE_PREPROCESS:
+        rgb = preprocess(rgb)
+
     pool = _ensure_pool(lang)
     engine = pool.get()
     try:
-        rgb = _decode_image(image_bytes)
         raw = engine.predict(rgb)
     finally:
         pool.put(engine)
