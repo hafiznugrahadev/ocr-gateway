@@ -36,13 +36,18 @@ def _build_engine(lang: str) -> Any:
         1, settings.OCR_CPU_THREADS // settings.OCR_PARALLEL_WORKERS
     )
     logger.info(
-        "building PaddleOCR engine lang=%s device=%s det_model=%s mkldnn=%s threads=%d",
+        "building PaddleOCR engine lang=%s device=%s det=%s rec=%s mkldnn=%s threads=%d",
         lang,
         device,
         settings.OCR_TEXT_DETECTION_MODEL,
+        settings.OCR_TEXT_RECOGNITION_MODEL,
         settings.OCR_ENABLE_MKLDNN,
         per_engine_threads,
     )
+    # Note: PaddleOCR ignores `lang` when explicit model names are given, so we
+    # rely on the multilingual mobile_rec model handling Indonesian / Latin
+    # scripts. Override OCR_TEXT_RECOGNITION_MODEL if you need a language-
+    # specific variant.
     kwargs: dict[str, Any] = {
         "lang": lang,
         "device": device,
@@ -50,6 +55,7 @@ def _build_engine(lang: str) -> Any:
         "use_doc_unwarping": settings.OCR_USE_DOC_UNWARPING,
         "use_textline_orientation": settings.OCR_USE_ANGLE_CLS,
         "text_detection_model_name": settings.OCR_TEXT_DETECTION_MODEL,
+        "text_recognition_model_name": settings.OCR_TEXT_RECOGNITION_MODEL,
         # Authoritative MKLDNN/OneDNN switch for PaddleOCR 3.x PIR path.
         # FLAGS_use_mkldnn env var alone is NOT honored by the new PaddleX
         # inference runner and triggers ConvertPirAttribute2RuntimeAttribute

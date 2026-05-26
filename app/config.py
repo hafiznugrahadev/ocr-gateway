@@ -48,6 +48,12 @@ class Settings(BaseSettings):
     # text but inference memory peak >8GB on Rosetta-emulated linux/amd64 → OOMKill.
     # Switch to "PP-OCRv5_server_det" only on native amd64 host with ≥16GB container limit.
     OCR_TEXT_DETECTION_MODEL: str = "PP-OCRv5_mobile_det"
+
+    # Default = mobile_rec. PaddleOCR auto-selects PP-OCRv5_server_rec when this
+    # is unset, which is ~3-4x slower on CPU and uses ~300MB more per engine.
+    # Switch to "PP-OCRv5_server_rec" only on native amd64 host with ≥16GB RAM
+    # and when accuracy matters more than throughput (e.g. small/dense text).
+    OCR_TEXT_RECOGNITION_MODEL: str = "PP-OCRv5_mobile_rec"
     OCR_USE_DOC_ORIENTATION_CLASSIFY: bool = True
     # UVDoc unwarping default off: memory peak >8GB on Rosetta-emulated linux/amd64.
     # Enable (=true) on native amd64 host with ≥16GB RAM, or for phone-photo scans
@@ -76,8 +82,16 @@ settings = Settings()
 #
 # FLAGS_use_mkldnn: belt-and-suspenders. PaddleOCR 3.x PIR path actually
 # honors the `enable_mkldnn` kwarg passed to PaddleOCR(), not this env var,
-# but we still pin it here in case the legacy executor is taken. Direct
-# assignment (not setdefault) so a stale host env can't silently override.
+# but we still pin it here in case the legacy executor is taken.
 os.environ["FLAGS_use_mkldnn"] = "1" if settings.OCR_ENABLE_MKLDNN else "0"
-os.environ.setdefault("OMP_NUM_THREADS", str(settings.OCR_CPU_THREADS))
-os.environ.setdefault("MKL_NUM_THREADS", str(settings.OCR_CPU_THREADS))
+
+# Per-engine thread budget. With pool of N engines, OMP/MKL must NOT see the
+# full OCR_CPU_THREADS or each parallel call grabs the whole budget → wild
+# oversubscription (N × OCR_CPU_THREADS total threads). Match the per-engine
+# `cpu_threads` kwarg we pass to PaddleOCR() so total stays at OCR_CPU_THREADS.
+# Direct assignment (not setdefault) overrides any stale host/Dockerfile env.
+_per_engine_threads = max(
+    1, settings.OCR_CPU_THREADS // settings.OCR_PARALLEL_WORKERS
+)
+os.environ["OMP_NUM_THREADS"] = str(_per_engine_threads)
+os.environ["MKL_NUM_THREADS"] = str(_per_engine_threads)
