@@ -1,9 +1,15 @@
-"""PaddleOCR 3.x wrapper with a per-language engine pool.
+"""PaddleOCR 3.x wrapper with a single global engine pool.
 
 PaddleOCR instances are not safe for concurrent predict() calls (the
 underlying Paddle inference predictor holds mutable graph state). To OCR
 multiple PDF pages in parallel we keep a small pool of independent engines
-per language and acquire one per call.
+and acquire one per call.
+
+The pool is keyed globally (not per-language) because we always pass
+explicit detection/recognition model names; PaddleOCR ignores the `lang`
+kwarg in that mode, so every incoming `language=` query would otherwise
+spin up a redundant pool. The `lang` argument is still threaded through
+for logging and as a placeholder for future per-language model selection.
 """
 
 import io
@@ -20,14 +26,17 @@ from app.services.preprocessor import preprocess
 
 logger = logging.getLogger(__name__)
 
+_GLOBAL_POOL_KEY = "default"
 _engine_pools: dict[str, _queue.Queue] = {}
 _init_lock = threading.Lock()
 
 
 def _build_engine(lang: str) -> Any:
-    """Construct one PaddleOCR engine.
+    """Construct one PaddleOCR engine and trigger PIR JIT compile.
 
-    Heavy: 200-500MB RAM, 5-15s cold load. Called N times during pool init.
+    Heavy: 200-500MB RAM, 5-15s cold load + 5-30s JIT. Called N times during
+    pool init. Doing the JIT warmup here (single-threaded) keeps it off the
+    first live request, where 4 parallel JIT compiles would compete for CPU.
     """
     from paddleocr import PaddleOCR
 
@@ -64,7 +73,7 @@ def _build_engine(lang: str) -> Any:
         "cpu_threads": per_engine_threads,
     }
     try:
-        return PaddleOCR(**kwargs)
+        engine = PaddleOCR(**kwargs)
     except TypeError as exc:
         # PaddleOCR 3.x has renamed some params across minor versions.
         # Drop optional kwargs progressively and retry.
@@ -72,38 +81,64 @@ def _build_engine(lang: str) -> Any:
             "PaddleOCR init failed with full kwargs (%s); retrying minimal", exc
         )
         try:
-            return PaddleOCR(
+            engine = PaddleOCR(
                 lang=lang,
                 device=device,
                 use_textline_orientation=settings.OCR_USE_ANGLE_CLS,
             )
         except TypeError:
-            return PaddleOCR(
+            engine = PaddleOCR(
                 lang=lang,
                 use_textline_orientation=settings.OCR_USE_ANGLE_CLS,
             )
 
+    _jit_warmup(engine)
+    return engine
 
-def _ensure_pool(lang: str) -> _queue.Queue:
-    """Lazily provision OCR_PARALLEL_WORKERS engines for `lang`."""
-    pool = _engine_pools.get(lang)
+
+def _jit_warmup(engine: Any) -> None:
+    """Force PaddleOCR's PIR executor to JIT-compile by running a dummy
+    predict. Without this, the first live request pays a 5-30s compile cost
+    that multiplies across the pool because N engines compile in parallel.
+    """
+    try:
+        # Synthetic page-sized image with some "text-like" black bars so the
+        # detection model finds at least one box and triggers recognition JIT.
+        dummy = np.full((640, 480, 3), 240, dtype=np.uint8)
+        dummy[200:230, 80:400] = 30
+        dummy[300:330, 80:400] = 30
+        engine.predict(dummy)
+        logger.info("engine JIT warmup complete")
+    except Exception:
+        logger.exception("engine JIT warmup failed; first request may be slow")
+
+
+def _ensure_pool(_lang: str = "") -> _queue.Queue:
+    """Lazily provision OCR_PARALLEL_WORKERS engines.
+
+    The pool is global; `_lang` is accepted only for API compatibility and
+    is otherwise ignored. See module docstring.
+    """
+    pool = _engine_pools.get(_GLOBAL_POOL_KEY)
     if pool is not None:
         return pool
     with _init_lock:
-        pool = _engine_pools.get(lang)
+        pool = _engine_pools.get(_GLOBAL_POOL_KEY)
         if pool is not None:
             return pool
         size = settings.OCR_PARALLEL_WORKERS
-        logger.info("provisioning OCR engine pool lang=%s size=%d", lang, size)
+        logger.info(
+            "provisioning OCR engine pool size=%d (warmup includes JIT)", size
+        )
         new_pool: _queue.Queue = _queue.Queue()
         for _ in range(size):
-            new_pool.put(_build_engine(lang))
-        _engine_pools[lang] = new_pool
+            new_pool.put(_build_engine(settings.OCR_LANGUAGE))
+        _engine_pools[_GLOBAL_POOL_KEY] = new_pool
         return new_pool
 
 
 def get_ocr(lang: str) -> None:
-    """Ensure the engine pool for `lang` is provisioned. Used at warmup."""
+    """Ensure the engine pool is provisioned. Used at warmup."""
     _ensure_pool(lang)
 
 
@@ -121,7 +156,7 @@ def _coerce_bbox(poly: Any) -> list[list[float]]:
 def ocr_image(image_bytes: bytes, lang: str) -> dict[str, Any]:
     """Run OCR on a single image. Returns {text, lines, confidence}.
 
-    Acquires an engine from the per-language pool (blocks if all are busy),
+    Acquires an engine from the global pool (blocks if all are busy),
     runs predict, returns it to the pool. Lines with confidence
     < OCR_UNCLEAR_THRESHOLD are marked as [UNCLEAR] in the joined `text`,
     while the original recognized string is preserved in `lines[i].text`.
