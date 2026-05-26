@@ -1,3 +1,80 @@
-.venv
+# --- Python bytecode / cache ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# --- Virtual environments ---
+.venv/
+venv/
+env/
+ENV/
+
+# --- Environment / secrets ---
 .env
+.env.local
+.env.*.local
+!.env.example
+
+# --- Test / lint / type-check caches ---
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.tox/
+.nox/
+.mypy_cache/
+.dmypy.json
+.pyre/
+.pytype/
+.ruff_cache/
+
+# --- Build / packaging artifacts ---
+build/
+dist/
+*.egg-info/
+*.egg
+pip-wheel-metadata/
+.eggs/
+
+# --- Jupyter / notebooks ---
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# --- IDE / editor ---
+.idea/
+.vscode/
+.cursor/
+*.swp
+*.swo
+*~
+
+# --- OS junk ---
+.DS_Store
+.AppleDouble
+._*
+Thumbs.db
+desktop.ini
+
+# --- Logs / runtime ---
+*.log
+logs/
+*.pid
+*.sock
+
+# --- Local data / models / scratch ---
 sample.pdf
+*.bin.tmp
+scratch/
+tmp/
+.tmp/
+
+# --- PaddleOCR / model downloads (large weights cached locally) ---
+.paddleocr/
+inference/
+models/
+
+# --- OMC (oh-my-claudecode) state ---
+.omc/
+.claude/
