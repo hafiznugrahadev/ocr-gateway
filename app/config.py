@@ -59,6 +59,11 @@ settings = Settings()
 
 # Tuning knobs that PaddlePaddle reads from the process environment.
 # Must be set BEFORE paddle is imported (which happens lazily inside services).
-os.environ.setdefault("FLAGS_use_mkldnn", "1" if settings.OCR_ENABLE_MKLDNN else "0")
+#
+# FLAGS_use_mkldnn: belt-and-suspenders. PaddleOCR 3.x PIR path actually
+# honors the `enable_mkldnn` kwarg passed to PaddleOCR(), not this env var,
+# but we still pin it here in case the legacy executor is taken. Direct
+# assignment (not setdefault) so a stale host env can't silently override.
+os.environ["FLAGS_use_mkldnn"] = "1" if settings.OCR_ENABLE_MKLDNN else "0"
 os.environ.setdefault("OMP_NUM_THREADS", str(settings.OCR_CPU_THREADS))
 os.environ.setdefault("MKL_NUM_THREADS", str(settings.OCR_CPU_THREADS))

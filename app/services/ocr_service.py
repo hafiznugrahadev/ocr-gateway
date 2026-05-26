@@ -40,6 +40,12 @@ def get_ocr(lang: str) -> Any:
             "use_doc_unwarping": settings.OCR_USE_DOC_UNWARPING,
             "use_textline_orientation": settings.OCR_USE_ANGLE_CLS,
             "text_detection_model_name": settings.OCR_TEXT_DETECTION_MODEL,
+            # Authoritative MKLDNN/OneDNN switch for PaddleOCR 3.x PIR path.
+            # FLAGS_use_mkldnn env var alone is NOT honored by the new
+            # PaddleX inference runner and triggers
+            # ConvertPirAttribute2RuntimeAttribute crashes on some images.
+            "enable_mkldnn": settings.OCR_ENABLE_MKLDNN,
+            "cpu_threads": settings.OCR_CPU_THREADS,
         }
         try:
             engine = PaddleOCR(**kwargs)
