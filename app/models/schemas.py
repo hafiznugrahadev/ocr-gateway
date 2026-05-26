@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field, HttpUrl, field_validator
 OutputFormat = Literal["text", "markdown", "json"]
 ExtractMethod = Literal["ocr", "text-layer"]
 SourceType = Literal["upload", "url"]
+EngineName = Literal["paddle", "onnx"]
 
 _PAGES_PATTERN = r"^(all|\d+(-\d+)?(,\d+(-\d+)?)*)$"
 _LANGUAGE_PATTERN = r"^[a-z][a-z0-9_]{0,15}$"
@@ -32,6 +33,15 @@ def _normalize_output_format(v: object) -> object:
     return v
 
 
+def _normalize_engine(v: object) -> object | None:
+    if v is None:
+        return None
+    if isinstance(v, str):
+        stripped = v.strip().lower()
+        return stripped or None
+    return v
+
+
 def _normalize_pages(v: object) -> object:
     if v is None:
         return "all"
@@ -39,6 +49,13 @@ def _normalize_pages(v: object) -> object:
         stripped = v.strip()
         return stripped or "all"
     return v
+
+
+_ENGINE_DESCRIPTION = (
+    "OCR backend: 'paddle' (PaddleOCR PP-OCRv5 mobile) or 'onnx' "
+    "(RapidOCR PP-OCRv4 via ONNX Runtime). Leave unset to use the server "
+    "default (OCR_DEFAULT_ENGINE)."
+)
 
 
 class ExtractFormParams(BaseModel):
@@ -56,6 +73,7 @@ class ExtractFormParams(BaseModel):
         default="all", pattern=_PAGES_PATTERN, description=_PAGES_DESCRIPTION
     )
     output_format: OutputFormat = "json"
+    engine: EngineName | None = Field(default=None, description=_ENGINE_DESCRIPTION)
 
     @field_validator("url", "language", mode="before")
     @classmethod
@@ -72,6 +90,11 @@ class ExtractFormParams(BaseModel):
     def _default_output_format(cls, v: object) -> object:
         return _normalize_output_format(v)
 
+    @field_validator("engine", mode="before")
+    @classmethod
+    def _strip_blank_engine(cls, v: object) -> object | None:
+        return _normalize_engine(v)
+
 
 class UrlExtractRequest(BaseModel):
     """JSON body for /extract when sending a URL."""
@@ -84,6 +107,7 @@ class UrlExtractRequest(BaseModel):
         default="all", pattern=_PAGES_PATTERN, description=_PAGES_DESCRIPTION
     )
     output_format: OutputFormat = "json"
+    engine: EngineName | None = Field(default=None, description=_ENGINE_DESCRIPTION)
 
     @field_validator("language", mode="before")
     @classmethod
@@ -99,6 +123,11 @@ class UrlExtractRequest(BaseModel):
     @classmethod
     def _default_output_format(cls, v: object) -> object:
         return _normalize_output_format(v)
+
+    @field_validator("engine", mode="before")
+    @classmethod
+    def _strip_blank_engine(cls, v: object) -> object | None:
+        return _normalize_engine(v)
 
 
 class PageResult(BaseModel):

@@ -73,7 +73,7 @@ tmp/
 # --- PaddleOCR / model downloads (large weights cached locally) ---
 .paddleocr/
 inference/
-models/
+/models/
 
 # --- OMC (oh-my-claudecode) state ---
 .omc/

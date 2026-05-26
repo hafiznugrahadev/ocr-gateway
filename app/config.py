@@ -1,4 +1,5 @@
 import os
+from typing import Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -37,6 +38,14 @@ class Settings(BaseSettings):
     # Adds 100-500ms per page when applied; turn off if your inputs are
     # already clean digital rasters.
     OCR_ENABLE_PREPROCESS: bool = True
+
+    # Default OCR engine when the request does not specify one.
+    # - "paddle" (default): PaddleOCR PP-OCRv5 mobile, internal pool of
+    #   OCR_PARALLEL_WORKERS engines. Higher accuracy on dense text.
+    # - "onnx": RapidOCR PP-OCRv4 via ONNX Runtime. 2-4x faster on CPU,
+    #   single shared engine, fully multi-threaded.
+    # Override per-request via the `engine` form/JSON field.
+    OCR_DEFAULT_ENGINE: Literal["paddle", "onnx"] = "paddle"
 
     OCR_MAX_FILE_SIZE_MB: int = 50
     OCR_MAX_PAGES: int = 100

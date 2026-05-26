@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, File, Form, Request, UploadFile
 from app.config import settings
 from app.dependencies import require_bearer
 from app.models.schemas import (
+    EngineName,
     ExtractFormParams,
     ExtractMetadata,
     ExtractResponse,
@@ -18,8 +19,9 @@ from app.models.schemas import (
     PageResult,
     UrlExtractRequest,
 )
+from app.services import onnx_service
 from app.services.detector import has_text_layer
-from app.services.ocr_service import get_ocr, ocr_image
+from app.services.ocr_service import get_ocr, ocr_image as paddle_ocr_image
 from app.services.pdf_extractor import extract_text_layer
 from app.services.pdf_rasterizer import rasterize_pages
 from app.services.url_fetcher import fetch_url
@@ -75,11 +77,12 @@ async def _read_inputs(
     language: str | None,
     pages: str | None,
     output_format: str | None,
-) -> tuple[bytes, str | None, str, str, str, str, str]:
+    engine: str | None,
+) -> tuple[bytes, str | None, str, str, str, str, str, EngineName]:
     """
     Resolve raw input bytes + meta from either multipart upload, multipart URL,
     or JSON body. Returns (raw, content_type, filename, source, lang, pages_spec,
-    output_format).
+    output_format, engine).
 
     All structured fields are validated via Pydantic models. Invalid values
     raise pydantic.ValidationError, which the global handler turns into a
@@ -97,6 +100,7 @@ async def _read_inputs(
 
         params = UrlExtractRequest.model_validate(body)
         chosen_lang = params.language or settings.OCR_LANGUAGE
+        chosen_engine: EngineName = params.engine or settings.OCR_DEFAULT_ENGINE
         raw, content_type, filename = await fetch_url(str(params.url))
         return (
             raw,
@@ -106,6 +110,7 @@ async def _read_inputs(
             chosen_lang,
             params.pages,
             params.output_format,
+            chosen_engine,
         )
 
     form_params = ExtractFormParams.model_validate(
@@ -114,6 +119,7 @@ async def _read_inputs(
             "language": language,
             "pages": pages,
             "output_format": output_format,
+            "engine": engine,
         }
     )
 
@@ -129,6 +135,7 @@ async def _read_inputs(
         )
 
     chosen_lang = form_params.language or settings.OCR_LANGUAGE
+    chosen_engine = form_params.engine or settings.OCR_DEFAULT_ENGINE
 
     if has_url:
         raw, content_type, filename = await fetch_url(str(form_params.url))
@@ -140,6 +147,7 @@ async def _read_inputs(
             chosen_lang,
             form_params.pages,
             form_params.output_format,
+            chosen_engine,
         )
 
     raw = await file.read()
@@ -151,7 +159,15 @@ async def _read_inputs(
         chosen_lang,
         form_params.pages,
         form_params.output_format,
+        chosen_engine,
     )
+
+
+def _ocr_image(image_bytes: bytes, lang: str, engine: EngineName) -> dict:
+    """Dispatch a single OCR call to the chosen backend."""
+    if engine == "onnx":
+        return onnx_service.ocr_image(image_bytes, lang)
+    return paddle_ocr_image(image_bytes, lang)
 
 
 @router.post("/extract", response_model=ExtractResponse)
@@ -163,11 +179,21 @@ async def extract_endpoint(
     language: Annotated[str | None, Form()] = None,
     pages: Annotated[str | None, Form()] = None,
     output_format: Annotated[str | None, Form()] = None,
+    engine: Annotated[str | None, Form()] = None,
 ) -> ExtractResponse:
     started = time.perf_counter()
 
-    raw, content_type, filename, source, chosen_lang, pages_spec, chosen_format = await _read_inputs(
-        request, file, url, language, pages, output_format
+    (
+        raw,
+        content_type,
+        filename,
+        source,
+        chosen_lang,
+        pages_spec,
+        chosen_format,
+        chosen_engine,
+    ) = await _read_inputs(
+        request, file, url, language, pages, output_format, engine
     )
 
     if not raw:
@@ -189,7 +215,7 @@ async def extract_endpoint(
 
     file_size_bytes = len(raw)
     logger.info(
-        "extract received source=%s filename=%s size=%dKB type=%s lang=%s format=%s pages=%s",
+        "extract received source=%s filename=%s size=%dKB type=%s lang=%s format=%s pages=%s engine=%s",
         source,
         filename or "?",
         file_size_bytes // 1024,
@@ -197,6 +223,7 @@ async def extract_endpoint(
         chosen_lang,
         chosen_format,
         pages_spec,
+        chosen_engine,
     )
 
     page_results: list[PageResult] = []
@@ -239,17 +266,20 @@ async def extract_endpoint(
         else:
             method = "ocr"
             logger.info(
-                "pdf using OCR pages=%d workers=%d",
+                "pdf using OCR pages=%d workers=%d engine=%s",
                 len(selected),
                 settings.OCR_PARALLEL_WORKERS,
+                chosen_engine,
             )
             rasters = await asyncio.to_thread(
                 rasterize_pages, raw, selected, settings.OCR_PDF_DPI
             )
 
             async def _ocr_one_page(n: int, png_bytes: bytes) -> PageResult:
-                logger.info("ocr pdf page=%d processing", n)
-                result = await asyncio.to_thread(ocr_image, png_bytes, chosen_lang)
+                logger.info("ocr pdf page=%d processing engine=%s", n, chosen_engine)
+                result = await asyncio.to_thread(
+                    _ocr_image, png_bytes, chosen_lang, chosen_engine
+                )
                 has_unclear = any(
                     line.get("unclear") for line in result.get("lines", [])
                 )
@@ -270,7 +300,9 @@ async def extract_endpoint(
     else:
         method = "ocr"
         try:
-            result = await asyncio.to_thread(ocr_image, raw, chosen_lang)
+            result = await asyncio.to_thread(
+                _ocr_image, raw, chosen_lang, chosen_engine
+            )
         except Exception as exc:
             raise OcrGatewayError("OCR_FAILED", f"Image OCR failed: {exc}", 500) from exc
         has_unclear = any(line.get("unclear") for line in result.get("lines", []))
@@ -289,9 +321,10 @@ async def extract_endpoint(
     full_text = _build_full_text(page_results, chosen_format)
     duration_ms = int((time.perf_counter() - started) * 1000)
     logger.info(
-        "extract completed filename=%s method=%s pages_processed=%d chars=%d duration_ms=%d",
+        "extract completed filename=%s method=%s engine=%s pages_processed=%d chars=%d duration_ms=%d",
         filename or "?",
         method,
+        chosen_engine,
         len(page_results),
         len(full_text),
         duration_ms,
@@ -301,9 +334,18 @@ async def extract_endpoint(
     # (Health endpoint also flips ready=True from the lifespan task.)
     _ = get_ocr  # noqa: F841 (referenced for warmup; engine already cached)
 
+    # If the method is OCR (not text-layer), report the actual engine used;
+    # otherwise the OCR engine field is meaningless (text-layer never touched
+    # either backend).
+    engine_label = (
+        f"{'paddleocr' if chosen_engine == 'paddle' else 'rapidocr-onnx'}"
+        if method == "ocr"
+        else "pymupdf-text-layer"
+    )
+
     return ExtractResponse(
         success=True,
-        engine="paddleocr",
+        engine=engine_label,
         method=method,
         pages_processed=len(page_results),
         total_pages=total_pages,
