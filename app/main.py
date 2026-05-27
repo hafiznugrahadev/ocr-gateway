@@ -70,10 +70,12 @@ async def _http_exc(_request: Request, exc: HTTPException) -> JSONResponse:
         403: "FORBIDDEN",
         404: "NOT_FOUND",
         405: "METHOD_NOT_ALLOWED",
+        408: "REQUEST_TIMEOUT",
         413: "FILE_TOO_LARGE",
         415: "UNSUPPORTED_FORMAT",
         422: "UNPROCESSABLE_ENTITY",
         500: "INTERNAL_ERROR",
+        504: "GATEWAY_TIMEOUT",
     }
     return error_response(
         code_map.get(exc.status_code, "ERROR"),

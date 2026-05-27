@@ -53,6 +53,13 @@ class Settings(BaseSettings):
     OCR_MIN_TEXT_LENGTH: int = 50
     OCR_PDF_DPI: int = 300
 
+    # Hard cap on the post-input OCR processing duration (seconds). Applies
+    # only to the OCR pipeline -- URL fetch has its own OCR_URL_DOWNLOAD_TIMEOUT.
+    # When exceeded the request returns 504 OCR_TIMEOUT. Note: Python threads
+    # can't be force-killed, so any in-flight Paddle/ONNX inference continues
+    # in the background until it finishes naturally.
+    OCR_PROCESSING_TIMEOUT: int = Field(default=3600, ge=10, le=86400)
+
     # Default = mobile_det. Server_det gives slightly higher recall on small/dense
     # text but inference memory peak >8GB on Rosetta-emulated linux/amd64 → OOMKill.
     # Switch to "PP-OCRv5_server_det" only on native amd64 host with ≥16GB container limit.

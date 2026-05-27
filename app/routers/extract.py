@@ -226,97 +226,122 @@ async def extract_endpoint(
         chosen_engine,
     )
 
-    page_results: list[PageResult] = []
-    method: str
+    async def _run_pipeline() -> tuple[list[PageResult], str, int]:
+        """Heavy OCR work scoped under OCR_PROCESSING_TIMEOUT."""
+        page_results: list[PageResult] = []
 
-    if kind == "pdf":
-        try:
-            is_text_based, total_pages = await asyncio.to_thread(has_text_layer, raw)
-        except Exception as exc:
-            raise OcrGatewayError("INVALID_PDF", f"Failed to read PDF: {exc}", 422) from exc
+        if kind == "pdf":
+            try:
+                is_text_based, total_pages = await asyncio.to_thread(has_text_layer, raw)
+            except Exception as exc:
+                raise OcrGatewayError(
+                    "INVALID_PDF", f"Failed to read PDF: {exc}", 422
+                ) from exc
 
-        if total_pages == 0:
-            raise OcrGatewayError("INVALID_PDF", "PDF has 0 pages", 422)
-        if total_pages > settings.OCR_MAX_PAGES:
-            raise OcrGatewayError(
-                "TOO_MANY_PAGES",
-                f"PDF has {total_pages} pages, exceeds limit of {settings.OCR_MAX_PAGES}",
-                400,
-            )
+            if total_pages == 0:
+                raise OcrGatewayError("INVALID_PDF", "PDF has 0 pages", 422)
+            if total_pages > settings.OCR_MAX_PAGES:
+                raise OcrGatewayError(
+                    "TOO_MANY_PAGES",
+                    f"PDF has {total_pages} pages, exceeds limit of {settings.OCR_MAX_PAGES}",
+                    400,
+                )
 
-        selected = parse_pages(pages_spec, total_pages)
-        if not selected:
-            raise OcrGatewayError("INVALID_PAGES", "No pages selected", 400)
+            selected = parse_pages(pages_spec, total_pages)
+            if not selected:
+                raise OcrGatewayError("INVALID_PAGES", "No pages selected", 400)
 
-        if is_text_based:
-            method = "text-layer"
-            logger.info("pdf using text-layer extraction pages=%d", len(selected))
-            extracted = await asyncio.to_thread(extract_text_layer, raw, selected)
-            for item in extracted:
-                page_results.append(
-                    PageResult(
-                        page=item["page"],
-                        text=item["text"],
-                        confidence=float(item.get("confidence", 1.0)),
-                        word_count=_word_count(item["text"]),
+            if is_text_based:
+                method = "text-layer"
+                logger.info("pdf using text-layer extraction pages=%d", len(selected))
+                extracted = await asyncio.to_thread(extract_text_layer, raw, selected)
+                for item in extracted:
+                    page_results.append(
+                        PageResult(
+                            page=item["page"],
+                            text=item["text"],
+                            confidence=float(item.get("confidence", 1.0)),
+                            word_count=_word_count(item["text"]),
+                            has_table=False,
+                            has_unclear=False,
+                        )
+                    )
+            else:
+                method = "ocr"
+                logger.info(
+                    "pdf using OCR pages=%d workers=%d engine=%s",
+                    len(selected),
+                    settings.OCR_PARALLEL_WORKERS,
+                    chosen_engine,
+                )
+                rasters = await asyncio.to_thread(
+                    rasterize_pages, raw, selected, settings.OCR_PDF_DPI
+                )
+
+                async def _ocr_one_page(n: int, png_bytes: bytes) -> PageResult:
+                    logger.info("ocr pdf page=%d processing engine=%s", n, chosen_engine)
+                    result = await asyncio.to_thread(
+                        _ocr_image, png_bytes, chosen_lang, chosen_engine
+                    )
+                    has_unclear = any(
+                        line.get("unclear") for line in result.get("lines", [])
+                    )
+                    return PageResult(
+                        page=n,
+                        text=result["text"],
+                        confidence=float(result.get("confidence", 0.0)),
+                        word_count=_word_count(result["text"]),
                         has_table=False,
-                        has_unclear=False,
+                        has_unclear=has_unclear,
+                    )
+
+                page_results.extend(
+                    await asyncio.gather(
+                        *(_ocr_one_page(n, png) for n, png in rasters)
                     )
                 )
         else:
             method = "ocr"
-            logger.info(
-                "pdf using OCR pages=%d workers=%d engine=%s",
-                len(selected),
-                settings.OCR_PARALLEL_WORKERS,
-                chosen_engine,
-            )
-            rasters = await asyncio.to_thread(
-                rasterize_pages, raw, selected, settings.OCR_PDF_DPI
-            )
-
-            async def _ocr_one_page(n: int, png_bytes: bytes) -> PageResult:
-                logger.info("ocr pdf page=%d processing engine=%s", n, chosen_engine)
+            try:
                 result = await asyncio.to_thread(
-                    _ocr_image, png_bytes, chosen_lang, chosen_engine
+                    _ocr_image, raw, chosen_lang, chosen_engine
                 )
-                has_unclear = any(
-                    line.get("unclear") for line in result.get("lines", [])
-                )
-                return PageResult(
-                    page=n,
+            except Exception as exc:
+                raise OcrGatewayError(
+                    "OCR_FAILED", f"Image OCR failed: {exc}", 500
+                ) from exc
+            has_unclear = any(line.get("unclear") for line in result.get("lines", []))
+            page_results.append(
+                PageResult(
+                    page=1,
                     text=result["text"],
                     confidence=float(result.get("confidence", 0.0)),
                     word_count=_word_count(result["text"]),
                     has_table=False,
                     has_unclear=has_unclear,
                 )
+            )
+            total_pages = 1
 
-            page_results.extend(
-                await asyncio.gather(
-                    *(_ocr_one_page(n, png) for n, png in rasters)
-                )
-            )
-    else:
-        method = "ocr"
-        try:
-            result = await asyncio.to_thread(
-                _ocr_image, raw, chosen_lang, chosen_engine
-            )
-        except Exception as exc:
-            raise OcrGatewayError("OCR_FAILED", f"Image OCR failed: {exc}", 500) from exc
-        has_unclear = any(line.get("unclear") for line in result.get("lines", []))
-        page_results.append(
-            PageResult(
-                page=1,
-                text=result["text"],
-                confidence=float(result.get("confidence", 0.0)),
-                word_count=_word_count(result["text"]),
-                has_table=False,
-                has_unclear=has_unclear,
-            )
+        return page_results, method, total_pages
+
+    try:
+        page_results, method, total_pages = await asyncio.wait_for(
+            _run_pipeline(), timeout=settings.OCR_PROCESSING_TIMEOUT
         )
-        total_pages = 1
+    except asyncio.TimeoutError as exc:
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        logger.error(
+            "OCR processing timed out filename=%s elapsed_ms=%d limit_s=%d",
+            filename or "?",
+            elapsed_ms,
+            settings.OCR_PROCESSING_TIMEOUT,
+        )
+        raise OcrGatewayError(
+            "OCR_TIMEOUT",
+            f"OCR processing exceeded the {settings.OCR_PROCESSING_TIMEOUT}s limit",
+            504,
+        ) from exc
 
     full_text = _build_full_text(page_results, chosen_format)
     duration_ms = int((time.perf_counter() - started) * 1000)
