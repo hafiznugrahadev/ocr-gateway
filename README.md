@@ -288,6 +288,7 @@ All settings come from environment variables (loaded from `.env` via `--env-file
 | `OCR_USE_DOC_ORIENTATION_CLASSIFY` | `true` | Detects 0/90/180/270 rotation (phone photos) |
 | `OCR_USE_DOC_UNWARPING` | `false` | UVDoc perspective-correction. ~2 GB peak memory; enable on GPU or hosts with ≥16 GB |
 | `OCR_TEXT_DETECTION_MODEL` | `PP-OCRv5_mobile_det` | Use `PP-OCRv5_server_det` on GPU/large-RAM hosts for slightly better recall |
+| `OCR_TEXT_RECOGNITION_MODEL` | `PP-OCRv5_server_rec` | Recognition model. See [Recognition models](#recognition-models) for trade-offs |
 | `OCR_DET_DB_BOX_THRESH` | `0.3` | Detection threshold |
 | `OCR_CPU_THREADS` | `4` | OMP/MKL thread count |
 | `OCR_PDF_DPI` | `200` | Rasterization DPI for scanned PDFs (300 = sharper, ~2× memory) |
@@ -297,6 +298,29 @@ All settings come from environment variables (loaded from `.env` via `--env-file
 | `OCR_MIN_TEXT_LENGTH` | `50` | Threshold (chars/page) for "is this PDF text-based?" |
 | `OCR_UNCLEAR_THRESHOLD` | `0.5` | Lines below this confidence become `[UNCLEAR]` |
 | `LOG_LEVEL` | `INFO` | |
+
+---
+
+## Recognition models
+
+`OCR_TEXT_RECOGNITION_MODEL` selects which PaddleOCR recognition model converts each detected text box into a string. The detection model (`OCR_TEXT_DETECTION_MODEL`) finds the boxes; the recognition model reads them. They are independent — you can mix any detection model with any recognition model.
+
+| Model | Language scope | Speed (CPU) | RAM / engine | Inter-word spaces | When to use |
+|---|---|---|---|---|---|
+| `PP-OCRv5_server_rec` *(default)* | CN + EN + JP + KR + Latin | baseline | ~700 MB | **Reliable** | Indonesian / English legal docs, especially with ALL-CAPS headings (`KEPUTUSAN BUPATI TABALONG`) |
+| `PP-OCRv5_mobile_rec` | CN + EN + JP + KR + Latin | ~3–4× faster | ~400 MB | **Drops them** on dense bold ALL-CAPS lines → `BUPATITABALONG` | Throughput-first pipelines on clean lowercase body text only |
+| `latin_PP-OCRv5_mobile_rec` | Latin scripts only (EN, ID, FR, DE, PT, ES, …) | ~3× faster than server_rec | ~300 MB | Reliable | Pure Indonesian/English workloads that want mobile speed without the space-dropping issue |
+| `en_PP-OCRv5_mobile_rec` | English only | ~3× faster than server_rec | ~300 MB | Reliable | English-only inputs (no Indonesian / no other Latin scripts) |
+
+**Recommendation per workload:**
+
+- **Indonesian government / legal documents (the original target of this gateway):** stay on `PP-OCRv5_server_rec`. ALL-CAPS headings are the norm and you cannot afford `BUPATITABALONG`-class concatenation.
+- **High-throughput pipelines on clean printed body text:** `latin_PP-OCRv5_mobile_rec` gives most of the speed of `mobile_rec` without the inter-word-space bug, as long as your inputs are Latin-script only.
+- **Mixed CJK + Latin content:** `PP-OCRv5_server_rec` is the only safe choice; `mobile_rec` has the same issue with dense Chinese/Japanese as it does with ALL-CAPS Latin.
+
+**Memory note:** the gateway provisions `OCR_PARALLEL_WORKERS` recognition engines at startup (see `_ensure_pool` in `app/services/ocr_service.py`). Total pool RAM ≈ `OCR_PARALLEL_WORKERS × (RAM/engine from the table above)`. Pick the model **and** the worker count together for your host: e.g. `server_rec` × 4 workers ≈ 2.8 GB; `server_rec` × 16 workers ≈ 11.2 GB.
+
+> Note: `engine=onnx` (RapidOCR backend) uses its own bundled PP-OCRv4 ONNX model and ignores `OCR_TEXT_RECOGNITION_MODEL`. This setting only affects the default `engine=paddle` path.
 
 ---
 

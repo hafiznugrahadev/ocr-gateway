@@ -65,11 +65,14 @@ class Settings(BaseSettings):
     # Switch to "PP-OCRv5_server_det" only on native amd64 host with ≥16GB container limit.
     OCR_TEXT_DETECTION_MODEL: str = "PP-OCRv5_mobile_det"
 
-    # Default = mobile_rec. PaddleOCR auto-selects PP-OCRv5_server_rec when this
-    # is unset, which is ~3-4x slower on CPU and uses ~300MB more per engine.
-    # Switch to "PP-OCRv5_server_rec" only on native amd64 host with ≥16GB RAM
-    # and when accuracy matters more than throughput (e.g. small/dense text).
-    OCR_TEXT_RECOGNITION_MODEL: str = "PP-OCRv5_mobile_rec"
+    # Default = server_rec. mobile_rec is faster (~3-4x on CPU, ~300MB less per
+    # engine) but its CTC decoder silently drops space tokens between glyphs in
+    # dense ALL-CAPS headings (e.g. Indonesian decree titles read "BUPATITABALONG"
+    # instead of "BUPATI TABALONG"). server_rec emits those spaces reliably.
+    # Override to "PP-OCRv5_mobile_rec" only when throughput matters more than
+    # space-emission accuracy AND your inputs are not heavy on bold uppercase text.
+    # Memory: ~700MB per engine; total pool = OCR_PARALLEL_WORKERS × ~700MB.
+    OCR_TEXT_RECOGNITION_MODEL: str = "PP-OCRv5_server_rec"
     OCR_USE_DOC_ORIENTATION_CLASSIFY: bool = True
     # UVDoc unwarping default off: memory peak >8GB on Rosetta-emulated linux/amd64.
     # Enable (=true) on native amd64 host with ≥16GB RAM, or for phone-photo scans
